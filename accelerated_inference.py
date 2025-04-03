@@ -67,7 +67,7 @@ def monitor_resources():
     while True:
         cpu_usage.append(psutil.cpu_percent(interval=1))
         memory_usage.append(psutil.virtual_memory().used / (1024 * 1024))  # Convert to MB
-        disk_usage.append(psutil.disk_io_counters().write_bytes / (1024 * 1024))  # Convert to MB
+        disk_usage.append(psutil.disk_io_counters().write_bytes / (1024 * 1024))
 
         yield cpu_usage, memory_usage, disk_usage
 
@@ -148,20 +148,15 @@ def run_inference(task_id, task_name, fold, config_name, config_flags, input_dir
     if config_name in ["fastest_no_mp", "flash", "no_tta_and_1_fold"]:
         command += ["-f", str(fold)]
     
-    # Print the start message
     print(f"Starting inference for Task {task_name} with configuration {config_name} using model {model_type_full}...")
-    
-    # Measure the time taken for inference
+
     start_time = time.time()
     
-    # Start resource monitoring
     resource_monitor = monitor_resources()
     next(resource_monitor)
     
-    # Run the inference command
     subprocess.run(command, check=True)
     
-    # Stop resource monitoring
     cpu_usage, memory_usage, disk_usage = next(resource_monitor)
     
     end_time = time.time()
@@ -171,7 +166,6 @@ def run_inference(task_id, task_name, fold, config_name, config_flags, input_dir
     scan_timings_file = os.path.join(output_dir, "scan_timings.txt")
     median_time_per_scan = calculate_median_scan_time(scan_timings_file) if os.path.exists(scan_timings_file) else 0
     
-    # Print the completion message
     print(f"Completed inference for Task {task_name} with configuration {config_name} in {elapsed_time:.2f} seconds.")
     
     # Save the timing result to the file
