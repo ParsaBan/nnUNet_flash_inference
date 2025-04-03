@@ -15,6 +15,7 @@
 
 import argparse
 from copy import deepcopy
+import time
 from typing import Tuple, Union, List
 
 import numpy as np
@@ -209,71 +210,78 @@ def predict_cases(model, list_of_lists, output_filenames, folds, save_npz, num_t
     preprocessing = preprocess_multithreaded(trainer, list_of_lists, cleaned_output_files, num_threads_preprocessing,
                                              segs_from_prev_stage)
     print("starting prediction...")
+    timing_file_path = os.path.join(os.path.dirname(output_filenames[0]), "scan_timings.txt")
     all_output_files = []
-    for preprocessed in preprocessing:
-        output_filename, (d, dct) = preprocessed
-        all_output_files.append(all_output_files)
-        if isinstance(d, str):
-            data = np.load(d)
-            os.remove(d)
-            d = data
+    with open(timing_file_path, 'w') as timing_file:
+        for preprocessed in preprocessing:
+            output_filename, (d, dct) = preprocessed
+            all_output_files.append(all_output_files)
+            if isinstance(d, str):
+                data = np.load(d)
+                os.remove(d)
+                d = data
+            
+            start_time = time.time()
 
-        print("predicting", output_filename)
-        trainer.load_checkpoint_ram(params[0], False)
-        softmax = trainer.predict_preprocessed_data_return_seg_and_softmax(
-            d, do_mirroring=do_tta, mirror_axes=trainer.data_aug_params['mirror_axes'], use_sliding_window=True,
-            step_size=step_size, use_gaussian=True, all_in_gpu=all_in_gpu,
-            mixed_precision=mixed_precision)[1]
-
-        for p in params[1:]:
-            trainer.load_checkpoint_ram(p, False)
-            softmax += trainer.predict_preprocessed_data_return_seg_and_softmax(
+            print("predicting", output_filename)
+            trainer.load_checkpoint_ram(params[0], False)
+            softmax = trainer.predict_preprocessed_data_return_seg_and_softmax(
                 d, do_mirroring=do_tta, mirror_axes=trainer.data_aug_params['mirror_axes'], use_sliding_window=True,
                 step_size=step_size, use_gaussian=True, all_in_gpu=all_in_gpu,
                 mixed_precision=mixed_precision)[1]
 
-        if len(params) > 1:
-            softmax /= len(params)
+            for p in params[1:]:
+                trainer.load_checkpoint_ram(p, False)
+                softmax += trainer.predict_preprocessed_data_return_seg_and_softmax(
+                    d, do_mirroring=do_tta, mirror_axes=trainer.data_aug_params['mirror_axes'], use_sliding_window=True,
+                    step_size=step_size, use_gaussian=True, all_in_gpu=all_in_gpu,
+                    mixed_precision=mixed_precision)[1]
 
-        transpose_forward = trainer.plans.get('transpose_forward')
-        if transpose_forward is not None:
-            transpose_backward = trainer.plans.get('transpose_backward')
-            softmax = softmax.transpose([0] + [i + 1 for i in transpose_backward])
+            if len(params) > 1:
+                softmax /= len(params)
 
-        if save_npz:
-            npz_file = output_filename[:-7] + ".npz"
-        else:
-            npz_file = None
+            transpose_forward = trainer.plans.get('transpose_forward')
+            if transpose_forward is not None:
+                transpose_backward = trainer.plans.get('transpose_backward')
+                softmax = softmax.transpose([0] + [i + 1 for i in transpose_backward])
 
-        if hasattr(trainer, 'regions_class_order'):
-            region_class_order = trainer.regions_class_order
-        else:
-            region_class_order = None
+            if save_npz:
+                npz_file = output_filename[:-7] + ".npz"
+            else:
+                npz_file = None
 
-        """There is a problem with python process communication that prevents us from communicating objects 
-        larger than 2 GB between processes (basically when the length of the pickle string that will be sent is 
-        communicated by the multiprocessing.Pipe object then the placeholder (I think) does not allow for long 
-        enough strings (lol). This could be fixed by changing i to l (for long) but that would require manually 
-        patching system python code. We circumvent that problem here by saving softmax_pred to a npy file that will 
-        then be read (and finally deleted) by the Process. save_segmentation_nifti_from_softmax can take either 
-        filename or np.ndarray and will handle this automatically"""
-        bytes_per_voxel = 4
-        if all_in_gpu:
-            bytes_per_voxel = 2  # if all_in_gpu then the return value is half (float16)
-        if np.prod(softmax.shape) > (2e9 / bytes_per_voxel * 0.85):  # * 0.85 just to be save
-            print(
-                "This output is too large for python process-process communication. Saving output temporarily to disk")
-            np.save(output_filename[:-7] + ".npy", softmax)
-            softmax = output_filename[:-7] + ".npy"
-        # save_segmentation_nifti_from_softmax(softmax, output_filename, dct, interpolation_order, region_class_order,
-        #                                     None, None,
-        #                                     npz_file, None, force_separate_z, interpolation_order_z)
+            if hasattr(trainer, 'regions_class_order'):
+                region_class_order = trainer.regions_class_order
+            else:
+                region_class_order = None
 
-        results.append(pool.starmap_async(save_segmentation_nifti_from_softmax,
-                                          ((softmax, output_filename, dct, interpolation_order, region_class_order,
-                                            None, None,
-                                            npz_file, None, force_separate_z, interpolation_order_z),)
-                                          ))
+            """There is a problem with python process communication that prevents us from communicating objects 
+            larger than 2 GB between processes (basically when the length of the pickle string that will be sent is 
+            communicated by the multiprocessing.Pipe object then the placeholder (I think) does not allow for long 
+            enough strings (lol). This could be fixed by changing i to l (for long) but that would require manually 
+            patching system python code. We circumvent that problem here by saving softmax_pred to a npy file that will 
+            then be read (and finally deleted) by the Process. save_segmentation_nifti_from_softmax can take either 
+            filename or np.ndarray and will handle this automatically"""
+            bytes_per_voxel = 4
+            if all_in_gpu:
+                bytes_per_voxel = 2  # if all_in_gpu then the return value is half (float16)
+            if np.prod(softmax.shape) > (2e9 / bytes_per_voxel * 0.85):  # * 0.85 just to be save
+                print(
+                    "This output is too large for python process-process communication. Saving output temporarily to disk")
+                np.save(output_filename[:-7] + ".npy", softmax)
+                softmax = output_filename[:-7] + ".npy"
+            # save_segmentation_nifti_from_softmax(softmax, output_filename, dct, interpolation_order, region_class_order,
+            #                                     None, None,
+            #                                     npz_file, None, force_separate_z, interpolation_order_z)
+
+            results.append(pool.starmap_async(save_segmentation_nifti_from_softmax,
+                                            ((softmax, output_filename, dct, interpolation_order, region_class_order,
+                                                None, None,
+                                                npz_file, None, force_separate_z, interpolation_order_z),)
+                                            ))
+            end_time = time.time()
+            delta_time = end_time - start_time
+            timing_file.write(f"{output_filename}: {delta_time:.2f} seconds\n")
 
     print("inference done. Now waiting for the segmentation export to finish...")
     _ = [i.get() for i in results]
@@ -493,60 +501,68 @@ def predict_cases_fastest(model, list_of_lists, output_filenames, folds, num_thr
                                              segs_from_prev_stage)
 
     print("starting prediction...")
-    for preprocessed in preprocessing:
-        print("getting data from preprocessor")
-        output_filename, (d, dct) = preprocessed
-        print("got something")
-        if isinstance(d, str):
-            print("what I got is a string, so I need to load a file")
-            data = np.load(d)
-            os.remove(d)
-            d = data
+    timing_file_path = os.path.join(os.path.dirname(output_filenames[0]), "scan_timings.txt")
+    with open(timing_file_path, 'w') as timing_file:
+        for preprocessed in preprocessing:
+            print("getting data from preprocessor")
+            output_filename, (d, dct) = preprocessed
+            print("got something")
+            if isinstance(d, str):
+                print("what I got is a string, so I need to load a file")
+                data = np.load(d)
+                os.remove(d)
+                d = data
 
-        # preallocate the output arrays
-        # same dtype as the return value in predict_preprocessed_data_return_seg_and_softmax (saves time)
-        all_softmax_outputs = np.zeros((len(params), trainer.num_classes, *d.shape[1:]), dtype=np.float16)
-        all_seg_outputs = np.zeros((len(params), *d.shape[1:]), dtype=int)
-        print("predicting", output_filename)
+            start_time = time.time()
+            # preallocate the output arrays
+            # same dtype as the return value in predict_preprocessed_data_return_seg_and_softmax (saves time)
+            all_softmax_outputs = np.zeros((len(params), trainer.num_classes, *d.shape[1:]), dtype=np.float16)
+            all_seg_outputs = np.zeros((len(params), *d.shape[1:]), dtype=int)
+            print("predicting", output_filename)
 
-        for i, p in enumerate(params):
-            trainer.load_checkpoint_ram(p, False)
-            res = trainer.predict_preprocessed_data_return_seg_and_softmax(d, do_mirroring=do_tta,
-                                                                           mirror_axes=trainer.data_aug_params['mirror_axes'],
-                                                                           use_sliding_window=True,
-                                                                           step_size=step_size, use_gaussian=True,
-                                                                           all_in_gpu=all_in_gpu,
-                                                                           mixed_precision=mixed_precision)
+            for i, p in enumerate(params):
+                trainer.load_checkpoint_ram(p, False)
+                res = trainer.predict_preprocessed_data_return_seg_and_softmax(d, do_mirroring=do_tta,
+                                                                            mirror_axes=trainer.data_aug_params['mirror_axes'],
+                                                                            use_sliding_window=True,
+                                                                            step_size=step_size, use_gaussian=True,
+                                                                            all_in_gpu=all_in_gpu,
+                                                                            mixed_precision=mixed_precision)
+                if len(params) > 1:
+                    # otherwise we dont need this and we can save ourselves the time it takes to copy that
+                    all_softmax_outputs[i] = res[1]
+                all_seg_outputs[i] = res[0]
+
+            if hasattr(trainer, 'regions_class_order'):
+                region_class_order = trainer.regions_class_order
+            else:
+                region_class_order = None
+            assert region_class_order is None, "predict_cases_fastest can only work with regular softmax predictions " \
+                                            "and is therefore unable to handle trainer classes with region_class_order"
+
+            print("aggregating predictions")
             if len(params) > 1:
-                # otherwise we dont need this and we can save ourselves the time it takes to copy that
-                all_softmax_outputs[i] = res[1]
-            all_seg_outputs[i] = res[0]
+                softmax_mean = np.mean(all_softmax_outputs, 0)
+                seg = softmax_mean.argmax(0)
+            else:
+                seg = all_seg_outputs[0]
 
-        if hasattr(trainer, 'regions_class_order'):
-            region_class_order = trainer.regions_class_order
-        else:
-            region_class_order = None
-        assert region_class_order is None, "predict_cases_fastest can only work with regular softmax predictions " \
-                                           "and is therefore unable to handle trainer classes with region_class_order"
+            print("applying transpose_backward")
+            transpose_forward = trainer.plans.get('transpose_forward')
+            if transpose_forward is not None:
+                transpose_backward = trainer.plans.get('transpose_backward')
+                seg = seg.transpose([i for i in transpose_backward])
 
-        print("aggregating predictions")
-        if len(params) > 1:
-            softmax_mean = np.mean(all_softmax_outputs, 0)
-            seg = softmax_mean.argmax(0)
-        else:
-            seg = all_seg_outputs[0]
-
-        print("applying transpose_backward")
-        transpose_forward = trainer.plans.get('transpose_forward')
-        if transpose_forward is not None:
-            transpose_backward = trainer.plans.get('transpose_backward')
-            seg = seg.transpose([i for i in transpose_backward])
-
-        print("initializing segmentation export")
-        results.append(pool.starmap_async(save_segmentation_nifti,
-                                          ((seg, output_filename, dct, 0, None),)
-                                          ))
-        print("done")
+            print("initializing segmentation export")
+            results.append(pool.starmap_async(save_segmentation_nifti,
+                                            ((seg, output_filename, dct, 0, None),)
+                                            ))
+            
+            end_time = time.time()
+            delta_time = end_time - start_time
+            timing_file.write(f"{output_filename}: {delta_time:.2f} seconds\n")
+            
+            print("done")
 
     print("inference done. Now waiting for the segmentation export to finish...")
     _ = [i.get() for i in results]
