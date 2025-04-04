@@ -3,7 +3,19 @@
 _Flash_ is one of five inference configurations that improve the efficiency of nnU-Net Inference. This project aims to improve the speed at which inference is conducted, with minimal side effects on segmentation accuracy and quality. _Flash_ can speed up inference by up to 25x for certain datasets. Larger datasets benefit more from _Flash_ than smaller datasets, however, the accuracy tradeoffs are also much more noticeable with larger datasets.
 
 ![image](https://github.com/user-attachments/assets/79d7e889-6577-4fd1-9533-bf0b45f77f09)
+<br><br><be>
+<div align="center">
+  
+| **Configuration**      | **Time (s)** | **Median time/scan (s)** |
+|------------------------|-------------|--------------------------|
+| Default                | 16,585.5    | 99.21                    |
+| No TTA                 | 2,926.0     | 18.5                     |
+| No TTA & 1 Fold        | 642.3       | 4.1                      |
+| Flash                  | 657.7       | 3.9                      |
+| Flash No MP            | 938.5       | 5.8                      |
 
+*Aggregate and per scan time taken for the 3D pancreas dataset in all five configurations (n=138).*
+</div>
 
 ## Preamble
 _Flash Inference_ is currently exclusively operable on the ten datasets from MSD 2018, which include:
